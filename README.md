@@ -90,11 +90,17 @@ Use `npm run watch` while editing, then run **Developer: Reload Window** in the 
 
 ## Download automated builds
 
-The **Build VSIX** GitHub Actions workflow runs on pushes, pull requests, and manual runs. It installs dependencies, runs the tests and type checks, builds `vscode-vinyl.vsix`, verifies its required files and metadata, and uploads it as the `vscode-vinyl` artifact. No Spotify credentials or Marketplace publishing token are required.
+**[Download the latest main-branch VSIX](https://github.com/sp-pbw/vscode-vinyl/releases/download/branch-main/vscode-vinyl.vsix)** — install it directly using **Extensions > ... > Install from VSIX**; no ZIP extraction is needed.
 
-Open the repository's **Actions > Build VSIX**, select a successful run, and download **Artifacts > vscode-vinyl**. Extract the downloaded ZIP and install the `.vsix` using the command or VS Code menu above.
+The **Build VSIX** GitHub Actions workflow runs on branch pushes, pull requests, and manual runs. It installs dependencies, runs the tests and type checks, builds `vscode-vinyl.vsix`, verifies its required files and metadata, and uploads it as the `vscode-vinyl` artifact. No Spotify credentials or Marketplace publishing token are required.
 
-Manual **Run workflow** is available after the workflow is merged into the default branch. If GitHub Actions is disabled on your fork, enable it in the **Actions** tab first.
+Successful branch builds also create or update one **Latest build: &lt;branch&gt;** prerelease in the repository's **Releases** section. Each has a stable `vscode-vinyl.vsix` download, with its source commit, workflow run, and SHA-256 checksum in the notes. These are rolling development builds, not versioned stable releases. Older successful builds remain available as Actions artifacts until their retention period expires.
+
+The `main` branch uses the reserved tag `branch-main`; other branches use a readable name plus a hash to avoid collisions. Only the publishing job has write permission. Pull request builds never publish releases, tag pushes do not trigger this workflow, and rerunning an older commit cannot replace a newer branch build. Rolling releases require release immutability to be disabled and rulesets to allow these generated tags to move.
+
+For PR builds or older commits, open **Actions > Build VSIX**, select a successful run, and download **Artifacts > vscode-vinyl**. Extract the downloaded ZIP and install the `.vsix`.
+
+New branches must contain this workflow to publish. For an existing branch that already contains it, use **Actions > Build VSIX > Run workflow** and select that branch, or push a commit. On a fork, use that fork's **Releases** page instead of the main-branch link above. If GitHub Actions is disabled, enable it in the **Actions** tab first.
 
 ---
 
