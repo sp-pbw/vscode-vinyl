@@ -56,9 +56,45 @@ Each user connects with their **own free Spotify app** (Spotify policy). It's ju
 - Open the **Vinyl** icon in the Activity Bar (drag it to the panel/secondary sidebar if you like).
 - Play a song from Spotify so there's an active session.
 - `⏮  ⏯  ⏭` control playback; **click or drag the bar** to seek.
+- **Spotify library** — click `⨁` to save the current song, or `♥` to remove it. The button checks saved status whenever the song changes and is disabled while a request is pending. Local files and non-track items cannot be saved.
 - **Playlists** — open the list and click one to start playing it.
 - **Tracks** — appears while playing **from a playlist**; open it to see every song and click one to jump to it.
 - Command Palette: *Vinyl: Play / Pause*, *Next Track*, *Previous Track*, *Choose Playlist*, *Connect / Disconnect Spotify*.
+
+---
+
+## Build and local testing
+
+Requires **Node.js 22+**, npm, and the VS Code command-line tool (`code`).
+
+```bash
+git clone https://github.com/sp-pbw/vscode-vinyl.git
+cd vscode-vinyl
+npm ci
+npm test
+npm run check-types
+npx --yes @vscode/vsce@4.1.0 package --out vscode-vinyl.vsix
+code --install-extension vscode-vinyl.vsix --force
+```
+
+Packaging automatically runs the production build. You can also use **Extensions > ... > Install from VSIX**. Installing with `--force` replaces an existing installed copy; reload VS Code afterward.
+
+To run from source without installing a VSIX, run these commands from the repository directory after `npm ci`:
+
+```bash
+npm run compile
+code --new-window --extensionDevelopmentPath="$PWD"
+```
+
+Use `npm run watch` while editing, then run **Developer: Reload Window** in the Extension Development Host to apply changes. Connect Spotify using the setup instructions above.
+
+## Download automated builds
+
+The **Build VSIX** GitHub Actions workflow runs on pushes, pull requests, and manual runs. It installs dependencies, runs the tests and type checks, builds `vscode-vinyl.vsix`, verifies its required files and metadata, and uploads it as the `vscode-vinyl` artifact. No Spotify credentials or Marketplace publishing token are required.
+
+Open the repository's **Actions > Build VSIX**, select a successful run, and download **Artifacts > vscode-vinyl**. Extract the downloaded ZIP and install the `.vsix` using the command or VS Code menu above.
+
+Manual **Run workflow** is available after the workflow is merged into the default branch. If GitHub Actions is disabled on your fork, enable it in the **Actions** tab first.
 
 ---
 
@@ -79,6 +115,7 @@ Each user connects with their **own free Spotify app** (Spotify policy). It's ju
 - **"Playback control requires Spotify Premium"** — the control API is Premium-only.
 - **Browser opened but never connected** — your Redirect URI must exactly match `http://127.0.0.1:<port>/callback` (port = `Vinyl: Redirect Port`).
 - **Tracks list empty / "Forbidden"** — Spotify blocks reading its own playlists (Daily Mix, Discover Weekly, editorial, etc.). Play from a playlist **you created**.
+- **Library access denied** — if you connected before library controls were added, click **Disconnect**, then **Connect Spotify** and approve again to grant `user-library-read` and `user-library-modify` permissions. Playback remains available without these permissions.
 
 ---
 

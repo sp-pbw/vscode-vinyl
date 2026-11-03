@@ -16,6 +16,7 @@
   const timeTot = $("time-tot");
   const playPauseBtn = $("playpause");
   const repeatBtn = $("repeat");
+  const libraryBtn = $("library");
   const noticeEl = $("notice");
   const connectBtn = $("connect");
   const playlistsBtn = $("playlists-btn");
@@ -30,6 +31,10 @@
   let ctxUri = undefined;
   let ctxType = undefined;
   let curTrackUri = undefined;
+  let trackSaved = undefined;
+  let libraryPending = false;
+  let libraryNotice = "";
+  let playbackNotice = "";
 
   // ---- local progress clock (smooth ticking between polls) ----
   let durationMs = 0;
@@ -64,6 +69,14 @@
     // cycle: off -> context (repeat all) -> track (repeat one) -> off
     const next = repeatState === "off" ? "context" : repeatState === "context" ? "track" : "off";
     vscode.postMessage({ cmd: "setRepeat", state: next });
+  });
+  libraryBtn.addEventListener("click", () => {
+    if (libraryBtn.disabled || !curTrackUri || typeof trackSaved !== "boolean") return;
+    libraryPending = true;
+    libraryNotice = "";
+    renderLibraryButton();
+    renderNotice();
+    vscode.postMessage({ cmd: "setTrackSaved", uri: curTrackUri, saved: !trackSaved });
   });
   connectBtn.addEventListener("click", () => {
     if (connectBtn.dataset.mode === "logout") {
@@ -149,6 +162,14 @@
       case "state":
         renderState(msg.state);
         break;
+      case "library":
+        if (msg.state.uri !== curTrackUri) break;
+        trackSaved = msg.state.saved;
+        libraryPending = msg.state.pending;
+        libraryNotice = msg.state.notice || "";
+        renderLibraryButton();
+        renderNotice();
+        break;
       case "playlists":
         renderPlaylists(msg.items);
         break;
@@ -177,6 +198,26 @@
     repeatBtn.classList.toggle("active", repeatState !== "off");
     repeatBtn.title =
       repeatState === "track" ? "Repeat: one" : repeatState === "context" ? "Repeat: all" : "Repeat: off";
+  }
+
+  function renderLibraryButton() {
+    libraryBtn.textContent = trackSaved === true ? "♥" : "⨁";
+    libraryBtn.classList.toggle("active", trackSaved === true);
+    libraryBtn.disabled = libraryPending || typeof trackSaved !== "boolean";
+    libraryBtn.title = libraryPending
+      ? trackSaved === undefined
+        ? "Checking Spotify library..."
+        : trackSaved ? "Removing from Spotify library..." : "Saving to Spotify library..."
+      : trackSaved === true
+        ? "Remove from Spotify library"
+        : trackSaved === false ? "Save to Spotify library" : "Spotify library status unavailable";
+    libraryBtn.setAttribute("aria-label", libraryBtn.title);
+    libraryBtn.setAttribute("aria-pressed", String(trackSaved === true));
+    libraryBtn.setAttribute("aria-busy", String(libraryPending));
+  }
+
+  function renderNotice() {
+    noticeEl.textContent = libraryNotice || playbackNotice;
   }
 
   let curTrackName = "";
@@ -247,7 +288,16 @@
     }
 
     // ---- queue availability + sync ----
-    curTrackUri = s.trackUri;
+    const prevTrackUri = curTrackUri;
+    curTrackUri = s.loggedIn && s.hasTrack ? s.trackUri : undefined;
+    const libraryAvailable = /^spotify:track:[A-Za-z0-9]+$/.test(curTrackUri || "");
+    libraryBtn.classList.toggle("hidden", !libraryAvailable);
+    if (curTrackUri !== prevTrackUri || !libraryAvailable) {
+      trackSaved = undefined;
+      libraryPending = libraryAvailable;
+      libraryNotice = "";
+      renderLibraryButton();
+    }
     const prevCtx = ctxUri;
     ctxUri = s.contextUri;
     ctxType = s.contextType;
@@ -261,7 +311,8 @@
       highlightCurrent();
     }
 
-    noticeEl.textContent = s.notice || (s.deviceName && s.isPlaying ? "♪ " + s.deviceName : "");
+    playbackNotice = s.notice || (s.deviceName && s.isPlaying ? "♪ " + s.deviceName : "");
+    renderNotice();
   }
 
   function setText(el, text) {

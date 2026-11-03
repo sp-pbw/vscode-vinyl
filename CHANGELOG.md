@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- Save or remove the current song from your Spotify library using the `⨁` / `♥` control, with saved status checked on track changes.
+- Request Spotify library read/modify permissions; previously connected users must disconnect and reconnect once.
+- Build and upload installable VSIX artifacts with GitHub Actions on pushes, pull requests, and manual runs.
+
 ## [0.0.4] - 2026-07-27
 
 - Renamed the extension to "Spotify Player for VSCode".

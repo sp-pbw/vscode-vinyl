@@ -6,6 +6,10 @@ const API = "https://api.spotify.com/v1";
 /** Thrown for API-level conditions the UI should surface as a friendly notice. */
 export class SpotifyNotice extends Error {}
 
+export function isSpotifyTrackUri(uri: string | undefined): uri is string {
+  return typeof uri === "string" && /^spotify:track:[A-Za-z0-9]+$/.test(uri);
+}
+
 interface RawPlayback {
   is_playing: boolean;
   progress_ms: number | null;
@@ -52,6 +56,11 @@ export class SpotifyClient {
       throw new SpotifyNotice(`Rate limited by Spotify. Retry in ${retryAfter}s.`);
     }
     if (res.status === 403) {
+      if (path.startsWith("/me/library")) {
+        throw new SpotifyNotice(
+          "Spotify library access was denied. Disconnect and reconnect Spotify to grant library permissions."
+        );
+      }
       // 403 means different things by endpoint: on player control it's the Premium
       // requirement; on reads (playlists, etc.) it's forbidden — surface Spotify's reason.
       if (path.startsWith("/me/player")) {
@@ -151,6 +160,35 @@ export class SpotifyClient {
   setRepeat(state: "off" | "track" | "context"): Promise<void> {
     return this.control("PUT", `/me/player/repeat?state=${state}`);
   }
+
+  private trackLibraryQuery(uri: string): string {
+    if (!isSpotifyTrackUri(uri)) {
+      throw new SpotifyNotice("Only Spotify tracks can be saved to your library.");
+    }
+    return `uris=${encodeURIComponent(uri)}`;
+  }
+
+  async isTrackSaved(uri: string): Promise<boolean> {
+    const res = await this.request(`/me/library/contains?${this.trackLibraryQuery(uri)}`);
+    if (!res.ok) {
+      throw new SpotifyNotice(`Could not check the Spotify library (${res.status}).`);
+    }
+    const data: unknown = await res.json();
+    if (!Array.isArray(data) || data.length !== 1 || typeof data[0] !== "boolean") {
+      throw new SpotifyNotice("Spotify returned an invalid library status.");
+    }
+    return data[0];
+  }
+
+  async setTrackSaved(uri: string, saved: boolean): Promise<void> {
+    const res = await this.request(`/me/library?${this.trackLibraryQuery(uri)}`, {
+      method: saved ? "PUT" : "DELETE",
+    });
+    if (!res.ok) {
+      throw new SpotifyNotice(`Could not ${saved ? "save" : "remove"} the track (${res.status}).`);
+    }
+  }
+
   playContext(contextUri: string): Promise<void> {
     return this.control("PUT", "/me/player/play", { context_uri: contextUri });
   }
