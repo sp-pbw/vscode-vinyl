@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as crypto from "crypto";
 import { SpotifyAuth } from "./spotify/auth";
-import { SpotifyClient, SpotifyNotice } from "./spotify/client";
+import { isSpotifyTrackUri, SpotifyClient, SpotifyNotice } from "./spotify/client";
 import { PlayerStatePoller } from "./spotify/poller";
-import { InboundMessage, OutboundMessage, PlayerState } from "./types";
+import { InboundMessage, OutboundMessage, PlayerState, TrackLibraryState } from "./types";
 
 export class VinylViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "vscodeVinyl.player";
@@ -11,6 +11,8 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private poller?: PlayerStatePoller;
   private lastState: PlayerState = { loggedIn: false, isPlaying: false, hasTrack: false };
+  private libraryState?: TrackLibraryState;
+  private readonly pendingLibraryStates = new Map<string, TrackLibraryState>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -18,6 +20,8 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
     private readonly client: SpotifyClient
   ) {
     auth.onDidChange(() => {
+      this.libraryState = undefined;
+      this.pendingLibraryStates.clear();
       void this.refreshNow();
       this.post({ type: "config", lpSkin: this.lpSkin() });
     });
@@ -37,10 +41,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.onDidReceiveMessage((msg: InboundMessage) => this.onMessage(msg));
 
-    this.poller = new PlayerStatePoller(this.client, (state) => {
-      this.lastState = state;
-      this.post({ type: "state", state });
-    });
+    this.poller = new PlayerStatePoller(this.client, (state) => this.updateState(state));
     this.context.subscriptions.push(this.poller);
 
     const syncPolling = () => {
@@ -60,6 +61,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
     try {
       switch (msg.cmd) {
         case "ready":
+          this.libraryState = undefined;
           this.post({ type: "config", lpSkin: this.lpSkin() });
           await this.refreshNow();
           break;
@@ -97,6 +99,9 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
         case "setRepeat":
           await this.client.setRepeat(msg.state);
           await this.refreshNow();
+          break;
+        case "setTrackSaved":
+          await this.setTrackSaved(msg.uri, msg.saved);
           break;
         case "playContext": {
           const prev = this.trackKey(this.lastState);
@@ -202,9 +207,91 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async refreshNow(): Promise<void> {
-    const state = await this.client.getPlaybackState();
+    this.updateState(await this.client.getPlaybackState());
+  }
+
+  private updateState(state: PlayerState): void {
+    const uri = state.loggedIn && state.hasTrack && isSpotifyTrackUri(state.trackUri)
+      ? state.trackUri
+      : undefined;
+    const changed = this.libraryState?.uri !== uri;
+    if (changed) {
+      // Reuse in-flight work if the user returns to a track before its request finishes.
+      this.libraryState = uri
+        ? this.pendingLibraryStates.get(uri) ?? { uri, pending: false }
+        : undefined;
+    }
     this.lastState = state;
     this.post({ type: "state", state });
+    if (this.libraryState) {
+      if (this.libraryState.saved === undefined && !this.libraryState.pending) {
+        void this.checkTrackLibrary(this.libraryState);
+      } else if (changed) {
+        this.postLibraryState(this.libraryState);
+      }
+    }
+  }
+
+  private postLibraryState(state: TrackLibraryState): void {
+    if (this.libraryState === state) {
+      this.post({ type: "library", state: { ...state } });
+    }
+  }
+
+  private async checkTrackLibrary(state: TrackLibraryState): Promise<void> {
+    state.pending = true;
+    this.pendingLibraryStates.set(state.uri, state);
+    this.postLibraryState(state);
+    try {
+      state.saved = await this.client.isTrackSaved(state.uri);
+      state.notice = undefined;
+    } catch (e) {
+      state.notice = e instanceof Error ? e.message : String(e);
+      if (this.libraryState === state) {
+        this.handleError(e);
+      }
+    } finally {
+      state.pending = false;
+      if (this.pendingLibraryStates.get(state.uri) === state) {
+        this.pendingLibraryStates.delete(state.uri);
+      }
+      this.postLibraryState(state);
+    }
+  }
+
+  private async setTrackSaved(uri: string, saved: boolean): Promise<void> {
+    const state = this.libraryState;
+    if (!state || state.uri !== uri) {
+      throw new SpotifyNotice("The current track changed. Please try again.");
+    }
+    if (typeof saved !== "boolean") {
+      throw new SpotifyNotice("Invalid Spotify library action.");
+    }
+    if (state.pending || state.saved === undefined) {
+      this.postLibraryState(state);
+      throw new SpotifyNotice("Wait for the Spotify library status before trying again.");
+    }
+    if (state.saved === saved) {
+      this.postLibraryState(state);
+      return;
+    }
+    state.pending = true;
+    state.notice = undefined;
+    this.pendingLibraryStates.set(uri, state);
+    this.postLibraryState(state);
+    try {
+      await this.client.setTrackSaved(uri, saved);
+      state.saved = saved;
+    } catch (e) {
+      state.notice = e instanceof Error ? e.message : String(e);
+      throw e;
+    } finally {
+      state.pending = false;
+      if (this.pendingLibraryStates.get(uri) === state) {
+        this.pendingLibraryStates.delete(uri);
+      }
+      this.postLibraryState(state);
+    }
   }
 
   /** Identifies the current track so we can detect when it actually changes. */
@@ -224,8 +311,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
       const state = await this.client.getPlaybackState();
-      this.lastState = state;
-      this.post({ type: "state", state });
+      this.updateState(state);
       if (this.trackKey(state) !== prevKey) {
         return;
       }
@@ -299,6 +385,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
       <button id="playpause" class="ctrl big" title="Play / Pause">▶</button>
       <button id="next" class="ctrl" title="Next">⏭</button>
       <button id="repeat" class="ctrl" title="Repeat">🔁</button>
+      <button id="library" class="ctrl hidden" title="Save to Spotify library" aria-label="Save to Spotify library" aria-pressed="false" disabled>⨁</button>
     </div>
 
     <div id="notice"></div>

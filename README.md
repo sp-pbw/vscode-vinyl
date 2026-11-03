@@ -56,6 +56,7 @@ Each user connects with their **own free Spotify app** (Spotify policy). It's ju
 - Open the **Vinyl** icon in the Activity Bar (drag it to the panel/secondary sidebar if you like).
 - Play a song from Spotify so there's an active session.
 - `⏮  ⏯  ⏭` control playback; **click or drag the bar** to seek.
+- **Spotify library** — click `⨁` to save the current song, or `♥` to remove it. The button checks saved status whenever the song changes and is disabled while a request is pending. Local files and non-track items cannot be saved.
 - **Playlists** — open the list and click one to start playing it.
 - **Tracks** — appears while playing **from a playlist**; open it to see every song and click one to jump to it.
 - Command Palette: *Vinyl: Play / Pause*, *Next Track*, *Previous Track*, *Choose Playlist*, *Connect / Disconnect Spotify*.
@@ -79,6 +80,7 @@ Each user connects with their **own free Spotify app** (Spotify policy). It's ju
 - **"Playback control requires Spotify Premium"** — the control API is Premium-only.
 - **Browser opened but never connected** — your Redirect URI must exactly match `http://127.0.0.1:<port>/callback` (port = `Vinyl: Redirect Port`).
 - **Tracks list empty / "Forbidden"** — Spotify blocks reading its own playlists (Daily Mix, Discover Weekly, editorial, etc.). Play from a playlist **you created**.
+- **Library access denied** — if you connected before library controls were added, click **Disconnect**, then **Connect Spotify** and approve again to grant `user-library-read` and `user-library-modify` permissions. Playback remains available without these permissions.
 
 ---
 
