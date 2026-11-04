@@ -31,6 +31,7 @@
   let ctxUri = undefined;
   let ctxType = undefined;
   let curTrackUri = undefined;
+  let curLibraryUri = undefined;
   let trackSaved = undefined;
   let libraryPending = false;
   let libraryNotice = "";
@@ -71,12 +72,12 @@
     vscode.postMessage({ cmd: "setRepeat", state: next });
   });
   libraryBtn.addEventListener("click", () => {
-    if (libraryBtn.disabled || !curTrackUri || typeof trackSaved !== "boolean") return;
+    if (libraryBtn.disabled || !curLibraryUri || typeof trackSaved !== "boolean") return;
     libraryPending = true;
     libraryNotice = "";
     renderLibraryButton();
     renderNotice();
-    vscode.postMessage({ cmd: "setTrackSaved", uri: curTrackUri, saved: !trackSaved });
+    vscode.postMessage({ cmd: "setTrackSaved", uri: curLibraryUri, saved: !trackSaved });
   });
   connectBtn.addEventListener("click", () => {
     if (connectBtn.dataset.mode === "logout") {
@@ -163,7 +164,7 @@
         renderState(msg.state);
         break;
       case "library":
-        if (msg.state.uri !== curTrackUri) break;
+        if (msg.state.uri !== curLibraryUri) break;
         trackSaved = msg.state.saved;
         libraryPending = msg.state.pending;
         libraryNotice = msg.state.notice || "";
@@ -201,13 +202,14 @@
   }
 
   function renderLibraryButton() {
-    libraryBtn.textContent = trackSaved === true ? "♥" : "⨁";
+    libraryBtn.textContent = trackSaved === true ? "♥"
+      : trackSaved === false ? "⨁" : libraryPending ? "..." : "?";
     libraryBtn.classList.toggle("active", trackSaved === true);
     libraryBtn.disabled = libraryPending || typeof trackSaved !== "boolean";
     libraryBtn.title = libraryPending
       ? trackSaved === undefined
         ? "Checking Spotify library..."
-        : trackSaved ? "Removing from Spotify library..." : "Saving to Spotify library..."
+        : "Updating Spotify library..."
       : trackSaved === true
         ? "Remove from Spotify library"
         : trackSaved === false ? "Save to Spotify library" : "Spotify library status unavailable";
@@ -288,11 +290,14 @@
     }
 
     // ---- queue availability + sync ----
-    const prevTrackUri = curTrackUri;
+    const prevLibraryUri = curLibraryUri;
     curTrackUri = s.loggedIn && s.hasTrack ? s.trackUri : undefined;
-    const libraryAvailable = /^spotify:track:[A-Za-z0-9]+$/.test(curTrackUri || "");
+    const libraryUri = s.libraryTrackUri ?? curTrackUri;
+    const libraryAvailable = /^spotify:track:[A-Za-z0-9]+$/.test(curTrackUri || "")
+      && /^spotify:track:[A-Za-z0-9]+$/.test(libraryUri || "");
+    curLibraryUri = libraryAvailable ? libraryUri : undefined;
     libraryBtn.classList.toggle("hidden", !libraryAvailable);
-    if (curTrackUri !== prevTrackUri || !libraryAvailable) {
+    if (curLibraryUri !== prevLibraryUri || !libraryAvailable) {
       trackSaved = undefined;
       libraryPending = libraryAvailable;
       libraryNotice = "";

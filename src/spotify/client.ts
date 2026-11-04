@@ -18,6 +18,7 @@ interface RawPlayback {
   context: { type: string; uri: string } | null;
   item: {
     uri: string;
+    linked_from?: { uri?: string } | null;
     name: string;
     duration_ms: number;
     artists: { name: string }[];
@@ -109,6 +110,7 @@ export class SpotifyClient {
       return { loggedIn: true, isPlaying: false, hasTrack: false, notice: "Nothing playing." };
     }
     const images = data.item.album.images ?? [];
+    const originalUri = data.item.linked_from?.uri;
     // Prefer a mid-size image for a crisp label.
     const art = images.find((i) => i.width && i.width <= 300)?.url ?? images[0]?.url;
     return {
@@ -123,6 +125,7 @@ export class SpotifyClient {
       deviceName: data.device?.name,
       repeatState: data.repeat_state ?? "off",
       trackUri: data.item.uri,
+      libraryTrackUri: isSpotifyTrackUri(originalUri) ? originalUri : data.item.uri,
       contextUri: data.context?.uri,
       contextType: data.context?.type,
     };
