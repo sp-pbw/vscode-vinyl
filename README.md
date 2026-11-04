@@ -56,7 +56,7 @@ Each user connects with their **own free Spotify app** (Spotify policy). It's ju
 - Open the **Vinyl** icon in the Activity Bar (drag it to the panel/secondary sidebar if you like).
 - Play a song from Spotify so there's an active session.
 - `⏮  ⏯  ⏭` control playback; **click or drag the bar** to seek.
-- **Spotify library** — click `⨁` to save the current song, or `♥` to remove it. The button checks saved status whenever the song changes and is disabled while a request is pending. Local files and non-track items cannot be saved.
+- **Spotify library** — click `⨁` to save the current song, or `♥` to remove it. Saved status is checked on song changes and refreshed on the first playback poll after 30 seconds, so changes made in Spotify appear without skipping the song. Library actions use the original track when Spotify plays a replacement version. The button is disabled while a request is pending; `...` means the initial check is running and `?` means status is unavailable (see the notice below the controls). Local files and non-track items cannot be saved.
 - **Playlists** — open the list and click one to start playing it.
 - **Tracks** — appears while playing **from a playlist**; open it to see every song and click one to jump to it.
 - Command Palette: *Vinyl: Play / Pause*, *Next Track*, *Previous Track*, *Choose Playlist*, *Connect / Disconnect Spotify*.

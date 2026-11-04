@@ -11,8 +11,10 @@ export interface PlayerState {
   deviceName?: string;
   /** Repeat mode: "off" | "track" | "context". */
   repeatState?: string;
-  /** URI of the currently playing track (for library controls and queue highlighting). */
+  /** URI of the currently playing track (for queue highlighting). */
   trackUri?: string;
+  /** Original track URI for library operations when Spotify relinks playback to another track. */
+  libraryTrackUri?: string;
   /** Playback context the track is playing from, if any (e.g. a playlist). */
   contextUri?: string;
   /** Context kind: "playlist" | "album" | "artist" | "collection" | undefined. */
@@ -22,6 +24,7 @@ export interface PlayerState {
 }
 
 export interface TrackLibraryState {
+  /** Library identity, which can differ from the playable track URI. */
   uri: string;
   /** Undefined until Spotify confirms whether the track is saved. */
   saved?: boolean;

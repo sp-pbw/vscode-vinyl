@@ -11,7 +11,7 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 const jsonResponse = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 
-function load(entry, { vscode, fetch, modules = {} } = {}) {
+function load(entry, { vscode, fetch, modules = {}, now } = {}) {
   if (!bundles.has(entry)) {
     bundles.set(entry, esbuild.buildSync({
       entryPoints: [path.join(root, entry)],
@@ -29,6 +29,7 @@ function load(entry, { vscode, fetch, modules = {} } = {}) {
     require: (id) => id === "vscode" ? vscode : modules[id] ?? require(id),
     fetch,
     Buffer,
+    Date: now ? class extends Date { static now() { return now(); } } : Date,
     Error,
     URL,
     URLSearchParams,
@@ -40,7 +41,25 @@ function load(entry, { vscode, fetch, modules = {} } = {}) {
 
 function clientWith(fetch) {
   const { SpotifyClient } = load("src/spotify/client.ts", { fetch });
-  return new SpotifyClient({ getAccessToken: async () => "test-token" });
+  return new SpotifyClient({
+    getAccessToken: async () => "test-token",
+    isLoggedIn: async () => true,
+  });
+}
+
+function rawPlayback(uri = "A", overrides = {}) {
+  return {
+    is_playing: true,
+    progress_ms: 1000,
+    item: {
+      uri: `spotify:track:${uri}`,
+      name: `Track ${uri}`,
+      duration_ms: 180000,
+      artists: [{ name: "Artist" }],
+      album: { images: [] },
+      ...overrides,
+    },
+  };
 }
 
 function playback(uri = "A", overrides = {}) {
@@ -85,7 +104,7 @@ function providerWith(overrides = {}) {
     next: async () => {},
   };
   const auth = { onDidChange: (listener) => { authChanged = listener; return disposable; } };
-  const { VinylViewProvider } = load("src/VinylViewProvider.ts", { vscode });
+  const { VinylViewProvider } = load("src/VinylViewProvider.ts", { vscode, now: overrides.now });
   const provider = new VinylViewProvider({ extensionUri: root, subscriptions: [] }, auth, client);
   provider.resolveWebviewView({
     visible: false,
@@ -191,6 +210,55 @@ test("checks saved status with an encoded Spotify URI and preserves both boolean
   }
 });
 
+test("keeps the playback URI but uses the original relinked URI for library controls", async () => {
+  for (const [linkedFrom, expected] of [
+    [{ uri: "spotify:track:A" }, "spotify:track:A"],
+    [undefined, "spotify:track:B"],
+    [null, "spotify:track:B"],
+    [{}, "spotify:track:B"],
+    [{ uri: "spotify:episode:A" }, "spotify:track:B"],
+  ]) {
+    const client = clientWith(async () => jsonResponse(rawPlayback("B", { linked_from: linkedFrom })));
+    const state = await client.getPlaybackState();
+    assert.equal(state.trackUri, "spotify:track:B");
+    assert.equal(state.libraryTrackUri, expected);
+  }
+});
+
+test("an already-saved relinked song renders a heart and removes the original library entry", async () => {
+  const writes = [];
+  const client = clientWith(async (input, init) => {
+    const url = new URL(input);
+    if (url.pathname === "/v1/me/player") {
+      return jsonResponse(rawPlayback("B", { linked_from: { uri: "spotify:track:A" } }));
+    }
+    if (url.pathname === "/v1/me/library/contains") {
+      return jsonResponse([url.searchParams.get("uris") === "spotify:track:A"]);
+    }
+    assert.equal(url.pathname, "/v1/me/library");
+    writes.push({ uri: url.searchParams.get("uris"), method: init.method });
+    return new Response(null, { status: 204 });
+  });
+  const view = providerWith({
+    isTrackSaved: (uri) => client.isTrackSaved(uri),
+    setTrackSaved: (uri, saved) => client.setTrackSaved(uri, saved),
+  });
+  const ui = webview();
+  view.setPlayback(await client.getPlaybackState());
+  await view.poll();
+  for (const message of view.messages) ui.send(message);
+  assert.equal(ui.button.textContent, "\u2665");
+  assert.equal(ui.button.disabled, false);
+  assert.equal(view.state().trackUri, "spotify:track:B");
+  ui.click();
+  assert.deepEqual(ui.commands.at(-1), { cmd: "setTrackSaved", uri: "spotify:track:A", saved: false });
+  const messageCount = view.messages.length;
+  await view.send(ui.commands.at(-1));
+  for (const message of view.messages.slice(messageCount)) ui.send(message);
+  assert.deepEqual(writes, [{ uri: "spotify:track:A", method: "DELETE" }]);
+  assert.equal(ui.button.textContent, "\u2a01");
+});
+
 test("saves and removes using the unified library endpoint without a playback device", async () => {
   const requests = [];
   const client = clientWith(async (input, init) => {
@@ -256,6 +324,117 @@ test("checks on readiness and URI changes, but not unchanged playback polls", as
   assert.equal(view.library().saved, true);
   await view.send({ cmd: "ready" });
   assert.equal(view.checks.length, 3);
+});
+
+test("refreshes externally saved and removed songs after 30 seconds without a track change", async () => {
+  let now = 0;
+  let saved = false;
+  const view = providerWith({ now: () => now, isTrackSaved: async () => saved });
+  const ui = webview();
+  const poll = async () => {
+    const messageCount = view.messages.length;
+    await view.poll();
+    for (const message of view.messages.slice(messageCount)) ui.send(message);
+  };
+  await poll();
+  assert.equal(ui.button.textContent, "\u2a01");
+  saved = true;
+  now = 29_999;
+  await poll();
+  assert.equal(view.checks.length, 1);
+  now = 30_000;
+  await poll();
+  assert.equal(view.checks.length, 2);
+  assert.equal(ui.button.textContent, "\u2665");
+  saved = false;
+  now = 60_000;
+  await poll();
+  assert.equal(view.checks.length, 3);
+  assert.equal(ui.button.textContent, "\u2a01");
+});
+
+test("does not overlap expired checks or apply their results to a different track", async () => {
+  let now = 0;
+  let finishCheck;
+  const pendingCheck = new Promise((resolve) => { finishCheck = resolve; });
+  const view = providerWith({
+    now: () => now,
+    isTrackSaved: async (uri) => uri === "spotify:track:A" && now > 0 ? pendingCheck : false,
+  });
+  await view.poll();
+  now = 30_000;
+  await view.poll();
+  await view.poll();
+  assert.equal(view.checks.length, 2);
+  assert.equal(view.library().pending, true);
+  view.setPlayback(playback("B"));
+  await view.poll();
+  finishCheck(true);
+  await settle();
+  assert.equal(view.library().uri, "spotify:track:B");
+  assert.equal(view.library().saved, false);
+});
+
+test("a successful mutation starts a fresh library-status cache interval", async () => {
+  let now = 0;
+  const view = providerWith({ now: () => now });
+  await view.poll();
+  now = 29_000;
+  await view.send({ cmd: "setTrackSaved", uri: "spotify:track:A", saved: true });
+  now = 30_000;
+  await view.poll();
+  assert.equal(view.checks.length, 1);
+  assert.equal(view.library().saved, true);
+  now = 59_000;
+  await view.poll();
+  assert.equal(view.checks.length, 2);
+});
+
+test("retains confirmed status on refresh failures and retries without checking on every poll", async () => {
+  let now = 0;
+  let fail = false;
+  let saved = true;
+  const view = providerWith({
+    now: () => now,
+    isTrackSaved: async () => {
+      if (fail) throw new Error("Library lookup failed");
+      return saved;
+    },
+  });
+  await view.poll();
+  now = 30_000;
+  fail = true;
+  await view.poll();
+  assert.equal(view.library().saved, true);
+  assert.equal(view.library().pending, false);
+  assert.equal(view.library().notice, "Library lookup failed");
+  now = 34_000;
+  await view.poll();
+  assert.equal(view.checks.length, 2);
+  now = 60_000;
+  fail = false;
+  saved = false;
+  await view.poll();
+  assert.equal(view.checks.length, 3);
+  assert.equal(view.library().saved, false);
+  assert.equal(view.library().notice, undefined);
+});
+
+test("keys library checks and commands by original identity rather than the playable URI", async () => {
+  const view = providerWith({ isTrackSaved: async () => true });
+  view.setPlayback(playback("B", { libraryTrackUri: "spotify:track:A" }));
+  await view.poll();
+  view.setPlayback(playback("C", { libraryTrackUri: "spotify:track:A" }));
+  await view.poll();
+  assert.deepEqual(view.checks, ["spotify:track:A"]);
+  view.setPlayback(playback("C", { libraryTrackUri: "spotify:track:D" }));
+  await view.poll();
+  assert.deepEqual(view.checks, ["spotify:track:A", "spotify:track:D"]);
+  assert.equal(view.library().uri, "spotify:track:D");
+  await view.send({ cmd: "setTrackSaved", uri: "spotify:track:A", saved: false });
+  assert.equal(view.writes.length, 0);
+  await view.send({ cmd: "setTrackSaved", uri: "spotify:track:D", saved: false });
+  assert.deepEqual(view.writes, [{ uri: "spotify:track:D", saved: false }]);
 });
 
 test("updates library status through immediate and track-change playback refreshes", async () => {
@@ -372,6 +551,8 @@ test("does not query or mutate unsupported, absent, or logged-out tracks", async
   for (const state of [
     playback("A", { trackUri: "spotify:local:artist:album:track:123" }),
     playback("A", { trackUri: "spotify:episode:A" }),
+    playback("A", { trackUri: "spotify:episode:A", libraryTrackUri: "spotify:track:A" }),
+    playback("A", { libraryTrackUri: "spotify:episode:A" }),
     playback("A", { hasTrack: false }),
     playback("A", { loggedIn: false }),
   ]) {
@@ -449,13 +630,15 @@ test("the webview resets on song changes, ignores stale status, and hides unsupp
   ui.send({ type: "state", state: playback() });
   ui.send({ type: "library", state: { uri: "spotify:track:A", pending: false, saved: true } });
   ui.send({ type: "state", state: playback("B") });
-  assert.equal(ui.button.textContent, "\u2a01");
+  assert.equal(ui.button.textContent, "...");
   assert.equal(ui.button.disabled, true);
   ui.send({ type: "library", state: { uri: "spotify:track:A", pending: false, saved: true } });
   assert.equal(ui.button.disabled, true);
   for (const state of [
     playback("B", { trackUri: "spotify:local:artist:album:track:123" }),
     playback("B", { trackUri: "spotify:episode:B" }),
+    playback("B", { trackUri: "spotify:episode:B", libraryTrackUri: "spotify:track:B" }),
+    playback("B", { libraryTrackUri: "spotify:episode:B" }),
     playback("B", { hasTrack: false }),
     playback("B", { loggedIn: false }),
   ]) {
@@ -463,6 +646,39 @@ test("the webview resets on song changes, ignores stale status, and hides unsupp
     assert.equal(ui.button.classList.contains("hidden"), true);
     assert.equal(ui.button.disabled, true);
   }
+});
+
+test("the webview never shows an add icon for an unknown or failed library status", () => {
+  const ui = webview();
+  ui.send({ type: "state", state: playback() });
+  assert.equal(ui.button.textContent, "...");
+  assert.equal(ui.button.title, "Checking Spotify library...");
+  ui.send({
+    type: "library",
+    state: { uri: "spotify:track:A", pending: false, notice: "Disconnect and reconnect Spotify" },
+  });
+  assert.equal(ui.button.textContent, "?");
+  assert.equal(ui.button.disabled, true);
+  assert.equal(ui.button.title, "Spotify library status unavailable");
+  assert.equal(ui.notice.textContent, "Disconnect and reconnect Spotify");
+  const count = ui.commands.length;
+  ui.click();
+  assert.equal(ui.commands.length, count);
+});
+
+test("the webview resets when the library identity changes but the playable URI stays the same", () => {
+  const ui = webview();
+  ui.send({ type: "state", state: playback("B", { libraryTrackUri: "spotify:track:A" }) });
+  ui.send({ type: "library", state: { uri: "spotify:track:A", pending: false, saved: true } });
+  assert.equal(ui.button.textContent, "\u2665");
+  ui.send({ type: "state", state: playback("B", { libraryTrackUri: "spotify:track:C" }) });
+  assert.equal(ui.button.textContent, "...");
+  assert.equal(ui.button.disabled, true);
+  ui.send({ type: "library", state: { uri: "spotify:track:A", pending: false, saved: true } });
+  assert.equal(ui.button.textContent, "...");
+  ui.send({ type: "library", state: { uri: "spotify:track:C", pending: false, saved: false } });
+  ui.click();
+  assert.deepEqual(ui.commands.at(-1), { cmd: "setTrackSaved", uri: "spotify:track:C", saved: true });
 });
 
 test("OAuth authorization requests both library scopes and retains existing playback scopes", async () => {

@@ -5,6 +5,8 @@ import { isSpotifyTrackUri, SpotifyClient, SpotifyNotice } from "./spotify/clien
 import { PlayerStatePoller } from "./spotify/poller";
 import { InboundMessage, OutboundMessage, PlayerState, TrackLibraryState } from "./types";
 
+const LIBRARY_REFRESH_INTERVAL_MS = 30_000;
+
 export class VinylViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "vscodeVinyl.player";
 
@@ -12,6 +14,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
   private poller?: PlayerStatePoller;
   private lastState: PlayerState = { loggedIn: false, isPlaying: false, hasTrack: false };
   private libraryState?: TrackLibraryState;
+  private libraryCheckedAt?: number;
   private readonly pendingLibraryStates = new Map<string, TrackLibraryState>();
 
   constructor(
@@ -211,11 +214,14 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
   }
 
   private updateState(state: PlayerState): void {
-    const uri = state.loggedIn && state.hasTrack && isSpotifyTrackUri(state.trackUri)
-      ? state.trackUri
+    const libraryUri = state.libraryTrackUri ?? state.trackUri;
+    const uri = state.loggedIn && state.hasTrack
+      && isSpotifyTrackUri(state.trackUri) && isSpotifyTrackUri(libraryUri)
+      ? libraryUri
       : undefined;
     const changed = this.libraryState?.uri !== uri;
     if (changed) {
+      this.libraryCheckedAt = undefined;
       // Reuse in-flight work if the user returns to a track before its request finishes.
       this.libraryState = uri
         ? this.pendingLibraryStates.get(uri) ?? { uri, pending: false }
@@ -224,7 +230,9 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
     this.lastState = state;
     this.post({ type: "state", state });
     if (this.libraryState) {
-      if (this.libraryState.saved === undefined && !this.libraryState.pending) {
+      const expired = this.libraryCheckedAt === undefined
+        || Date.now() - this.libraryCheckedAt >= LIBRARY_REFRESH_INTERVAL_MS;
+      if (!this.libraryState.pending && (this.libraryState.saved === undefined || expired)) {
         void this.checkTrackLibrary(this.libraryState);
       } else if (changed) {
         this.postLibraryState(this.libraryState);
@@ -252,6 +260,9 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       state.pending = false;
+      if (this.libraryState === state) {
+        this.libraryCheckedAt = Date.now();
+      }
       if (this.pendingLibraryStates.get(state.uri) === state) {
         this.pendingLibraryStates.delete(state.uri);
       }
@@ -282,6 +293,9 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
     try {
       await this.client.setTrackSaved(uri, saved);
       state.saved = saved;
+      if (this.libraryState === state) {
+        this.libraryCheckedAt = Date.now();
+      }
     } catch (e) {
       state.notice = e instanceof Error ? e.message : String(e);
       throw e;
@@ -385,7 +399,7 @@ export class VinylViewProvider implements vscode.WebviewViewProvider {
       <button id="playpause" class="ctrl big" title="Play / Pause">▶</button>
       <button id="next" class="ctrl" title="Next">⏭</button>
       <button id="repeat" class="ctrl" title="Repeat">🔁</button>
-      <button id="library" class="ctrl hidden" title="Save to Spotify library" aria-label="Save to Spotify library" aria-pressed="false" disabled>⨁</button>
+      <button id="library" class="ctrl hidden" title="Spotify library status unavailable" aria-label="Spotify library status unavailable" aria-pressed="false" disabled>?</button>
     </div>
 
     <div id="notice"></div>
